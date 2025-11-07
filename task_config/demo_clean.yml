@@ -1,37 +1,37 @@
 # if you want to modify the config, please check the following tutorial first:
 # https://robotwin-platform.github.io/doc/usage/configurations.html
-render_freq: 0
-episode_num: 50
-use_seed: false
-save_freq: 15
-embodiment: [aloha-agilex]
-language_num: 100
-domain_randomization:
-  random_background: false
-  cluttered_table: false
-  clean_background_rate: 1
-  random_head_camera_dis: 0
-  random_table_height: 0
-  random_light: false
-  crazy_random_light_rate: 0
-camera:
-  head_camera_type: D435
-  wrist_camera_type: D435
-  collect_head_camera: true
-  collect_wrist_camera: true
-data_type:
-  rgb: true
-  third_view: false
-  depth: false
-  pointcloud: false
-  observer: false
-  endpose: true
-  qpos: true
-  mesh_segmentation: false
-  actor_segmentation: false
-pcd_down_sample_num: 1024
-pcd_crop: true
-save_path: ./data
-clear_cache_freq: 5
-collect_data: true
-eval_video_log: true
+render_freq: 0  # 渲染频率设为 0，仅在必要时渲染以节省资源
+episode_num: 50  # 每个批次生成的 episode 数量
+use_seed: false  # 是否固定随机种子，false 表示每次运行都不同
+save_freq: 15  # 每隔多少个 episode 保存一次数据或模型
+embodiment: [aloha-agilex]  # 当前使用的机器人形态组合
+language_num: 100  # 生成的语言描述数量，用于指令多样化
+domain_randomization:  # 域随机化配置，用于增强场景多样性
+  random_background: false  # 是否随机替换背景
+  cluttered_table: false  # 桌面是否添加杂物提升复杂度
+  clean_background_rate: 1  # 干净背景出现的概率
+  random_head_camera_dis: 0  # 头部相机距离的随机扰动量
+  random_table_height: 0  # 桌面高度的随机扰动范围（米）
+  random_light: false  # 是否启用随机光照
+  crazy_random_light_rate: 0  # 极端光照场景出现的概率
+camera:  # 相机硬件与采集开关
+  head_camera_type: D435  # 头部相机型号
+  wrist_camera_type: D435  # 腕部相机型号
+  collect_head_camera: true  # 是否采集头部相机数据
+  collect_wrist_camera: true  # 是否采集腕部相机数据
+data_type:  # 输出数据类型选择
+  rgb: true  # 保存 RGB 图像
+  third_view: false  # 是否保存第三视角画面
+  depth: false  # 是否保存深度图
+  pointcloud: false  # 是否保存点云数据
+  observer: false  # 是否保存观察者视角
+  endpose: true  # 是否记录末端执行器位姿
+  qpos: true  # 是否记录关节位置信息
+  mesh_segmentation: false  # 是否输出网格分割结果
+  actor_segmentation: false  # 是否输出角色分割结果
+pcd_down_sample_num: 1024  # 点云抽样数量，当前为默认预设
+pcd_crop: true  # 是否对点云数据进行裁剪
+save_path: ./data  # 数据保存路径
+clear_cache_freq: 5  # 清理缓存的频率
+collect_data: true  # 是否执行数据采集流程
+eval_video_log: true  # 是否记录评估阶段的视频日志
