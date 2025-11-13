@@ -19,16 +19,20 @@ def get_model(usr_args):  # keep
         usr_args["right_arm_dim"],
         usr_args["rdt_step"],
     )
-    rdt = RDT(
-        os.path.join(
-            parent_directory,
-            f"checkpoints/{model_name}/checkpoint-{checkpoint_id}/pytorch_model/mp_rank_00_model_states.pt",
-        ),
-        usr_args["task_name"],
-        left_arm_dim,
-        right_arm_dim,
-        rdt_step,
-    )
+    ckpt_dir = os.path.join(parent_directory, f"checkpoints/{model_name}/checkpoint-{checkpoint_id}")
+    ds_checkpoint = os.path.join(ckpt_dir, "pytorch_model", "mp_rank_00_model_states.pt")
+    ema_checkpoint = os.path.join(ckpt_dir, "ema", "model.safetensors")
+
+    if os.path.isfile(ds_checkpoint):
+        pretrained_path = ds_checkpoint
+    elif any(os.path.isfile(os.path.join(ckpt_dir, fname)) for fname in ("model.safetensors", "pytorch_model.bin")):
+        pretrained_path = ckpt_dir  # HuggingFace style checkpoint folder
+    elif os.path.isfile(ema_checkpoint):
+        pretrained_path = ema_checkpoint
+    else:
+        raise FileNotFoundError(f"Could not find usable RDT weights under {ckpt_dir}. Please verify the checkpoint.")
+
+    rdt = RDT(pretrained_path, usr_args["task_name"], left_arm_dim, right_arm_dim, rdt_step)
     return rdt
 
 
