@@ -43,7 +43,8 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
         max_train_episodes=None,
         use_expert_action=False,  # 🔥 是否只用专家动作(False则使用RDT)
         mix_expert_action=False,  # 🔥 同时使用专家与教师, 生成混合标签
-        mix_alpha=0.5,            # 🔥 混合权重: mixed = alpha*rdt + (1-alpha)*expert
+        mix_alpha=0.5,            # 🔥 混合权重/概率
+        mix_mode="prob",          # 🔥 prob=按概率选RDT/专家; linear=线性加权
     ):
 
         super().__init__()
@@ -52,9 +53,11 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
         self.use_expert_action = use_expert_action
         self.mix_expert_action = mix_expert_action
         self.mix_alpha = mix_alpha
+        self.mix_mode = mix_mode
 
         if mix_expert_action:
-            print(f"🔥 使用混合标签进行训练, mix_alpha={mix_alpha} (mixed = alpha*rdt + (1-alpha)*expert)")
+            mode_tip = "按概率选择 (混合概率=alpha)" if mix_mode == "prob" else "线性加权 (alpha*rdt + (1-alpha)*expert)"
+            print(f"🔥 使用混合标签进行训练, mix_alpha={mix_alpha}, 模式={mix_mode} ({mode_tip})")
             action_key = None  # 下方会组合生成
             keys = ["head_camera", "state", "action", "rdt_action"]
         else:
@@ -73,7 +76,15 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
             # 混合教师与专家
             expert = self.replay_buffer['action']
             teacher = self.replay_buffer['rdt_action']
-            mixed = self.mix_alpha * teacher + (1 - self.mix_alpha) * expert
+            if self.mix_mode == "linear":
+                mixed = self.mix_alpha * teacher + (1 - self.mix_alpha) * expert
+            elif self.mix_mode == "prob":
+                rng = np.random.default_rng(seed)
+                # 以mix_alpha为概率选用RDT整步动作，避免夹爪/关节出现在“半开半关”的无效插值
+                mask = rng.random((expert.shape[0], 1)) < self.mix_alpha
+                mixed = np.where(mask, teacher, expert)
+            else:
+                raise ValueError(f"不支持的mix_mode: {self.mix_mode}")
             # ReplayBuffer 不支持 __setitem__, 直接写 data
             self.replay_buffer.data['action'] = mixed.astype(np.float32)
             # 保留 teacher 以便可视化/调试需要; 若想省内存可删除:
