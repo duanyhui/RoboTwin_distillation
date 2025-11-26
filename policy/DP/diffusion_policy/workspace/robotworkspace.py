@@ -261,8 +261,17 @@ class RobotWorkspace(BaseWorkspace):
                 # checkpoint
                 if ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
                     # checkpointing
-                    save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
-                    self.save_checkpoint(f"checkpoints/{save_name}-{seed}/{self.epoch + 1}.ckpt")  # TODO
+                    dataset_cfg = self.cfg.task.dataset
+                    save_base = pathlib.Path(dataset_cfg.zarr_path).stem
+                    # 根据标签来源决定保存目录名称
+                    if getattr(dataset_cfg, "mix_expert_action", False):
+                        mode_tag = "with_rdt_mix"
+                    elif getattr(dataset_cfg, "use_expert_action", False):
+                        mode_tag = "expert_only"
+                    else:
+                        mode_tag = "with_rdt_only"
+                    save_name = f"{save_base}_{mode_tag}"
+                    self.save_checkpoint(f"checkpoints/{save_name}/{self.epoch + 1}.ckpt")
 
                 # ========= eval end for this epoch ==========
                 policy.train()

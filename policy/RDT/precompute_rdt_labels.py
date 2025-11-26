@@ -88,7 +88,7 @@ def preprocess_image(img_nchw):
     return PImage.fromarray(img_decoded)
 
 
-def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_steps=None):
+def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_steps=None, instruction=None):
     """
     对数据集中的每个样本运行RDT推理
     
@@ -104,6 +104,7 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
     head_camera = dataset['head_camera']
     state = dataset['state']
     episode_ends = dataset['episode_ends']
+    instruction_text = instruction if instruction else rdt_model.task_name
     
     num_samples = len(state)
     data_action_dim = dataset['action'].shape[1]  # 数据集的原始动作维度 (例如14)
@@ -117,6 +118,7 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
     print(f"\n开始RDT推理...")
     print(f"  - 数据集动作维度: {data_action_dim}")
     print(f"  - RDT模型动作维度: {model_action_dim}")
+    print(f"  - 文本指令: {instruction_text}")
     
     if data_action_dim != model_action_dim:
         print(f"  ⚠️  动作维度不匹配! 将自动转换 {model_action_dim}维 → {data_action_dim}维")
@@ -181,8 +183,8 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
         
         # 每个episode开始时重置模型
         rdt_model.reset_obsrvationwindows()
-        rdt_model.set_language_instruction(rdt_model.task_name)  # 使用任务名作为指令
-        
+        rdt_model.set_language_instruction(instruction_text)  # 使用指定指令
+   
         # 初始化观察窗口 (需要两帧)
         # 第一帧用dummy
         rdt_model.observation_window = None
@@ -191,11 +193,13 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
             # 准备当前帧的图像 (NCHW -> HWC -> BGR uint8)
             current_img_nchw = head_camera[t]  # [3, H, W]
             current_img_hwc = np.transpose(current_img_nchw, (1, 2, 0))  # [H, W, 3]
-            cv2.imshow("RDT", current_img_nchw)
             
             # 确保是uint8 BGR格式
             if current_img_hwc.dtype != np.uint8:
                 current_img_hwc = np.clip(current_img_hwc, 0, 255).astype(np.uint8)
+            
+            # cv2.imshow("RDT", current_img_hwc)
+            # cv2.waitKey(1)
             
             # 准备前一帧的图像
             if t == ep_start:
@@ -417,7 +421,8 @@ def main():
         rdt,
         dataset,
         use_first_step_only=args.use_first_step,
-        use_mean_steps=args.use_mean_steps
+        use_mean_steps=args.use_mean_steps,
+        instruction=instruction
     )
     
     # 4. 保存结果
