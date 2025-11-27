@@ -45,6 +45,9 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
         mix_expert_action=False,  # 🔥 同时使用专家与教师, 生成混合标签
         mix_alpha=0.5,            # 🔥 混合权重/概率
         mix_mode="prob",          # 🔥 prob=按概率选RDT/专家; linear=线性加权
+        add_expert_noise=False,   # 🔥 是否对专家动作加高斯噪声
+        noise_std=0.01,           # 🔥 噪声标准差
+        noise_clip=0.05,          # 🔥 噪声截断阈值; 设为None则不截断
     ):
 
         super().__init__()
@@ -54,6 +57,9 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
         self.mix_expert_action = mix_expert_action
         self.mix_alpha = mix_alpha
         self.mix_mode = mix_mode
+        self.add_expert_noise = add_expert_noise
+        self.noise_std = noise_std
+        self.noise_clip = noise_clip
 
         if mix_expert_action:
             mode_tip = "按概率选择 (混合概率=alpha)" if mix_mode == "prob" else "线性加权 (alpha*rdt + (1-alpha)*expert)"
@@ -64,6 +70,11 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
             action_key = 'action' if use_expert_action else 'rdt_action'
             print(f"🔥 使用{'专家动作' if use_expert_action else 'RDT标签'}进行训练")
             keys = ["head_camera", "state", action_key]
+
+        if add_expert_noise and not (use_expert_action or mix_expert_action):
+            print("⚠️ add_expert_noise=True 但未使用专家动作，此设置无效")
+        elif add_expert_noise:
+            print(f"🔊 对专家动作加入高斯噪声: std={noise_std}, clip={noise_clip}")
         
         # 加载数据
         self.replay_buffer = ReplayBuffer.copy_from_path(
@@ -72,9 +83,20 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
         )
         
         # 兼容: 将最终监督标签放到 self.replay_buffer['action']
+        final_action = None
+
+        def _noisify(arr):
+            rng = np.random.default_rng(seed)
+            noise = rng.normal(0.0, self.noise_std, size=arr.shape).astype(np.float32)
+            if self.noise_clip is not None:
+                noise = np.clip(noise, -self.noise_clip, self.noise_clip)
+            return arr + noise
+
         if mix_expert_action:
             # 混合教师与专家
             expert = self.replay_buffer['action']
+            if self.add_expert_noise:
+                expert = _noisify(expert)
             teacher = self.replay_buffer['rdt_action']
             if self.mix_mode == "linear":
                 mixed = self.mix_alpha * teacher + (1 - self.mix_alpha) * expert
@@ -86,12 +108,21 @@ class RobotImageDatasetWithRDT(BaseImageDataset):
             else:
                 raise ValueError(f"不支持的mix_mode: {self.mix_mode}")
             # ReplayBuffer 不支持 __setitem__, 直接写 data
-            self.replay_buffer.data['action'] = mixed.astype(np.float32)
+            final_action = mixed.astype(np.float32)
+            self.replay_buffer.data['action'] = final_action
             # 保留 teacher 以便可视化/调试需要; 若想省内存可删除:
             # del self.replay_buffer['rdt_action']
         elif not use_expert_action:
-            self.replay_buffer.data['action'] = self.replay_buffer[action_key]
+            final_action = self.replay_buffer[action_key].astype(np.float32)
+            self.replay_buffer.data['action'] = final_action
             del self.replay_buffer.data[action_key]
+        else:
+            # 只用专家动作
+            expert = self.replay_buffer['action']
+            if self.add_expert_noise:
+                expert = _noisify(expert)
+            final_action = expert.astype(np.float32)
+            self.replay_buffer.data['action'] = final_action
 
         val_mask = get_val_mask(n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed)
         train_mask = ~val_mask

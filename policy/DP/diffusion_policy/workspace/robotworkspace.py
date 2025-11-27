@@ -265,9 +265,15 @@ class RobotWorkspace(BaseWorkspace):
                     save_base = pathlib.Path(dataset_cfg.zarr_path).stem
                     # 根据标签来源决定保存目录名称
                     if getattr(dataset_cfg, "mix_expert_action", False):
-                        mode_tag = "with_rdt_mix"
+                        if getattr(dataset_cfg, "add_expert_noise", False):
+                            mode_tag = "with_rdt_mix_noise"
+                        else:
+                            mode_tag = "with_rdt_mix"
                     elif getattr(dataset_cfg, "use_expert_action", False):
-                        mode_tag = "expert_only"
+                        if getattr(dataset_cfg, "add_expert_noise", False):
+                            mode_tag = "expert_noise"
+                        else:
+                            mode_tag = "expert_only"
                     else:
                         mode_tag = "with_rdt_only"
                     save_name = f"{save_base}_{mode_tag}"
