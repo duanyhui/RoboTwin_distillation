@@ -19,19 +19,17 @@ DP_DATA_PATH="../DP/data/${TASK_NAME}-${TASK_CONFIG}-${NUM_EPISODES}.zarr"
 OUTPUT_PATH="./rdt_labels/${TASK_NAME}-${TASK_CONFIG}-${NUM_EPISODES}_with_rdt.zarr"
 
 # 机器人配置
-# ⚠️ 重要: 这里的维度必须与RDT训练时使用的维度一致！
-# 如果数据集是14维 (7+1+7+1)，但RDT期望16维，说明RDT训练时用的是8+8
-# 方案1: 修改为RDT训练时的维度 (推荐)
-LEFT_ARM_DIM=6
-RIGHT_ARM_DIM=6
+# ⚠️ 维度改为自动推断：设为 -1 会根据 zarr 的 state 维度自动推断左右臂。
+# 若需要强行指定，可改成具体数字，比如 LEFT_ARM_DIM=6 RIGHT_ARM_DIM=6
+LEFT_ARM_DIM=-1
+RIGHT_ARM_DIM=-1
 RDT_STEP=64
-
-# 方案2: 如果确定数据集是7+7维，需要填充到8+8维
-# 请根据实际情况选择
+STATIONARY_MASK_EPS=0.01   # 静止掩码阈值: 专家速度<eps则用专家动作覆盖
 
 # 标签提取策略
-USE_FIRST_STEP="--use_first_step"        # 只使用第1步
-# USE_MEAN_STEPS="--use_mean_steps 4"   # 或者使用前4步的平均
+# 默认使用前4步均值平滑；若想只用第1步，将 USE_FIRST_STEP 取消注释并注释掉 USE_MEAN_STEPS
+#USE_FIRST_STEP="--use_first_step"        # 只使用第1步
+USE_MEAN_STEPS="--use_mean_steps 4"      # 使用前N步平均
 
 # ============ 运行预计算 ============
 
@@ -50,7 +48,9 @@ python precompute_rdt_labels.py \
     --left_arm_dim ${LEFT_ARM_DIM} \
     --right_arm_dim ${RIGHT_ARM_DIM} \
     --rdt_step ${RDT_STEP} \
-    ${USE_FIRST_STEP}
+    --stationary_mask_eps ${STATIONARY_MASK_EPS} \
+    ${USE_FIRST_STEP} \
+    ${USE_MEAN_STEPS}
 
 echo ""
 echo "✅ 预计算完成!"

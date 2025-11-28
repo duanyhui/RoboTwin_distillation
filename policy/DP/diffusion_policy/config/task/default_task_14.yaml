@@ -52,3 +52,6 @@ dataset:
   mix_expert_action: False    # True=blend RDT and expert using mix_alpha
   mix_alpha: 0.5
   mix_mode: prob             # prob=概率选RDT; linear=线性加权
+  add_expert_noise: False    # True=专家动作加噪声
+  noise_std: 0.01
+  noise_clip: 0.05

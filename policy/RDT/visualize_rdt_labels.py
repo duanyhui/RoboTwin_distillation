@@ -36,7 +36,6 @@ def load_data(zarr_path):
 
 def compute_statistics(data):
     """计算统计指标"""
-    time.sleep(1000)
     expert = data['expert_action']
     rdt = data['rdt_action']
     
@@ -160,7 +159,6 @@ def main():
     parser.add_argument('--output_dir', type=str, default='./visualizations',
                         help='可视化结果输出目录')
     args = parser.parse_args()
-    time.sleep(10)
     
     print(f"\n加载数据: {args.zarr_path}")
     data = load_data(args.zarr_path)

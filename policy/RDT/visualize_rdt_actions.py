@@ -371,7 +371,7 @@ def main():
                         help='Animation frame rate')
     
     args = parser.parse_args()
-    time.sleep(10)  # Delay to allow user to cancel if needed
+    #time.sleep(10)  # Delay to allow user to cancel if needed
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     

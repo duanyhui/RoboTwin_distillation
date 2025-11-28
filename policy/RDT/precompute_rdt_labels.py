@@ -91,7 +91,7 @@ def preprocess_image(img_nchw):
 def run_rdt_inference(
     rdt_model,
     dataset,
-    use_first_step_only=True,
+    use_first_step_only=False,
     use_mean_steps=None,
     instruction=None,
     stationary_mask_eps=None,
@@ -137,7 +137,13 @@ def run_rdt_inference(
     episode_starts = [0] + episode_ends[:-1].tolist()
     episode_ends_list = episode_ends.tolist()
     
-    print(f"  - 配置: {'仅使用第1步' if use_first_step_only else f'使用前{use_mean_steps}步平均'}")
+    if use_first_step_only:
+        strategy_desc = "仅使用第1步"
+    elif use_mean_steps is not None:
+        strategy_desc = f"使用前{use_mean_steps}步平均"
+    else:
+        strategy_desc = "未启用平滑，默认使用第1步"
+    print(f"  - 配置: {strategy_desc}")
     
     sample_idx = 0
     
@@ -207,6 +213,8 @@ def run_rdt_inference(
             # 确保是uint8 BGR格式
             if current_img_hwc.dtype != np.uint8:
                 current_img_hwc = np.clip(current_img_hwc, 0, 255).astype(np.uint8)
+            # 训练期使用 RGB，这里从 BGR 转回 RGB 以减小颜色域偏移
+            current_img_hwc = cv2.cvtColor(current_img_hwc, cv2.COLOR_BGR2RGB)
             
             # cv2.imshow("RDT", current_img_hwc)
             # cv2.waitKey(1)
@@ -220,6 +228,7 @@ def run_rdt_inference(
                 prev_img_hwc = np.transpose(prev_img_nchw, (1, 2, 0))
                 if prev_img_hwc.dtype != np.uint8:
                     prev_img_hwc = np.clip(prev_img_hwc, 0, 255).astype(np.uint8)
+                prev_img_hwc = cv2.cvtColor(prev_img_hwc, cv2.COLOR_BGR2RGB)
             
             # 准备图像数组 (RDT的update_observation_window需要3个相机的图像)
             # 但我们只有head_camera，所以复制它来填充3个位置
@@ -383,16 +392,16 @@ def main():
                         help='输出标签路径')
     
     # 推理参数
-    parser.add_argument('--left_arm_dim', type=int, default=7,
-                        help='左臂维度')
-    parser.add_argument('--right_arm_dim', type=int, default=7,
-                        help='右臂维度')
+    parser.add_argument('--left_arm_dim', type=int, default=-1,
+                        help='左臂维度，-1 时自动根据数据维度推断')
+    parser.add_argument('--right_arm_dim', type=int, default=-1,
+                        help='右臂维度，-1 时自动根据数据维度推断')
     parser.add_argument('--rdt_step', type=int, default=64,
                         help='RDT chunk size')
     
     # 标签提取策略
-    parser.add_argument('--use_first_step', action='store_true', default=True,
-                        help='只使用RDT预测的第1步作为标签')
+    parser.add_argument('--use_first_step', action='store_true', default=False,
+                        help='只使用RDT预测的第1步作为标签 (默认关闭，可用 --use_mean_steps 做平滑)')
     parser.add_argument('--use_mean_steps', type=int, default=None,
                         help='使用前N步的平均作为标签')
     parser.add_argument('--stationary_mask_eps', type=float, default=None,
@@ -402,6 +411,23 @@ def main():
     
     # 1. 加载数据集
     dataset = load_zarr_dataset(args.data_path)
+
+    # 自动推断臂维度
+    data_dim = dataset["state"].shape[1]
+    inferred_left = (data_dim - 2) // 2
+    inferred_right = data_dim - inferred_left - 2
+    if args.left_arm_dim < 0 or args.right_arm_dim < 0:
+        args.left_arm_dim = inferred_left
+        args.right_arm_dim = inferred_right
+        print(f"  - 自动推断关节维度: left_arm={args.left_arm_dim}, right_arm={args.right_arm_dim}")
+    else:
+        if args.left_arm_dim + args.right_arm_dim + 2 != data_dim:
+            print(f"⚠️ 指定的臂维度 ({args.left_arm_dim}+{args.right_arm_dim}+2) 与数据维度 {data_dim} 不一致，请确认！")
+
+    # 处理标签策略冲突
+    if args.use_first_step and args.use_mean_steps is not None:
+        print("⚠️ 同时指定了 --use_first_step 和 --use_mean_steps，优先使用均值平滑。")
+        args.use_first_step = False
     
     # 2. 初始化RDT模型
     print(f"\n初始化RDT模型...")
@@ -459,5 +485,4 @@ def main():
 
 
 if __name__ == '__main__':
-    time.sleep(10)
     main()
