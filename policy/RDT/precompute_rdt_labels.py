@@ -88,7 +88,14 @@ def preprocess_image(img_nchw):
     return PImage.fromarray(img_decoded)
 
 
-def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_steps=None, instruction=None):
+def run_rdt_inference(
+    rdt_model,
+    dataset,
+    use_first_step_only=True,
+    use_mean_steps=None,
+    instruction=None,
+    stationary_mask_eps=None,
+):
     """
     对数据集中的每个样本运行RDT推理
     
@@ -103,6 +110,7 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
     """
     head_camera = dataset['head_camera']
     state = dataset['state']
+    expert_action = dataset['action']
     episode_ends = dataset['episode_ends']
     instruction_text = instruction if instruction else rdt_model.task_name
     
@@ -119,6 +127,8 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
     print(f"  - 数据集动作维度: {data_action_dim}")
     print(f"  - RDT模型动作维度: {model_action_dim}")
     print(f"  - 文本指令: {instruction_text}")
+    if stationary_mask_eps is not None:
+        print(f"  - 静止掩码: 速度阈值 eps={stationary_mask_eps}")
     
     if data_action_dim != model_action_dim:
         print(f"  ⚠️  动作维度不匹配! 将自动转换 {model_action_dim}维 → {data_action_dim}维")
@@ -266,6 +276,17 @@ def run_rdt_inference(rdt_model, dataset, use_first_step_only=True, use_mean_ste
                 # 维度匹配，直接使用
                 rdt_predictions[t] = predicted_action
             
+            # 方案1: 静止状态掩码 (专家不动时强制对齐专家，抑制RDT漂移/抢跑)
+            if stationary_mask_eps is not None:
+                prev_idx = max(ep_start, t - 1)
+                expert_curr = expert_action[t]
+                expert_prev = expert_action[prev_idx]
+                vel = np.abs(expert_curr - expert_prev)
+                mask = vel < stationary_mask_eps  # 专家维持静止的维度
+                if np.any(mask):
+                    # 将这些维度的标签替换成专家的动作
+                    rdt_predictions[t, mask] = expert_curr[mask]
+            
             sample_idx += 1
     
     print(f"\n✅ RDT推理完成! 共处理 {num_samples} 个样本")
@@ -374,6 +395,8 @@ def main():
                         help='只使用RDT预测的第1步作为标签')
     parser.add_argument('--use_mean_steps', type=int, default=None,
                         help='使用前N步的平均作为标签')
+    parser.add_argument('--stationary_mask_eps', type=float, default=None,
+                        help='静止掩码阈值; 若专家速度<eps则用专家动作覆盖 (推荐0.01~0.02)')
     
     args = parser.parse_args()
     
@@ -422,7 +445,8 @@ def main():
         dataset,
         use_first_step_only=args.use_first_step,
         use_mean_steps=args.use_mean_steps,
-        instruction=instruction
+        instruction=instruction,
+        stationary_mask_eps=args.stationary_mask_eps,
     )
     
     # 4. 保存结果
