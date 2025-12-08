@@ -6,6 +6,7 @@ import dataclasses
 import difflib
 import logging
 import pathlib
+import numpy as np
 from typing import Any, Protocol, TypeAlias
 
 import etils.epath as epath
@@ -20,6 +21,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.kuavo_policy as kuavo_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.optimizer as _optimizer
@@ -286,6 +288,46 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=False)
+class LeRobotKuavoDataConfig(DataConfigFactory):
+    # Repack transforms: Map LeRobot keys to internal keys
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(default=_transforms.Group(inputs=[
+        _transforms.RepackTransform({
+            "images": {
+                "head_cam_h": "observation.images.head_cam_h",
+                "wrist_cam_l": "observation.images.wrist_cam_l",
+                "wrist_cam_r": "observation.images.wrist_cam_r",
+            },
+            "state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        })
+    ]))
+    
+    action_sequence_keys: Sequence[str] = ("action", )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                kuavo_policy.KuavoInputs(action_dim=model_config.action_dim),
+                _transforms.ResizeImages(224, 224),
+            ],
+            outputs=[kuavo_policy.KuavoOutputs()],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=False)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -383,7 +425,7 @@ _CONFIGS = [
         name="pi0_base_aloha_robotwin_lora",
         model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
-            repo_id="test",  # your datasets repo_id
+            repo_id="place_container_plate-demo_clean-50",  # your datasets repo_id
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({
@@ -414,7 +456,7 @@ _CONFIGS = [
         name="pi0_fast_aloha_robotwin_lora",
         model=pi0_fast.Pi0FASTConfig(paligemma_variant="gemma_2b_lora"),
         data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",  # your datasets repo_id
+            repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({
@@ -500,6 +542,49 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30000,
         fsdp_devices=1,  # refer line 359
+    ),
+    # pi0_kuavo_lora
+    TrainConfig(
+        name="pi0_kuavo_lora",
+        model=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora", 
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32  # keep consistent with pi0_base checkpoint shape
+        ),
+        data=LeRobotKuavoDataConfig(
+            repo_id="kuavo_task3_0101-0150",  # Replace with your actual dataset ID
+            base_config=DataConfig(
+                local_files_only=True,
+                prompt_from_task=True,
+            ),
+        ),
+        freeze_filter=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=1,
+    ),
+    # pi0_kuavo_full
+    TrainConfig(
+        name="pi0_kuavo_full",
+        model=pi0.Pi0Config(
+            action_dim=32
+        ),
+        data=LeRobotKuavoDataConfig(
+            repo_id="kuavo_task3_0101-0150",
+            base_config=DataConfig(
+                local_files_only=True,
+                prompt_from_task=True,
+            ),
+        ),
+        freeze_filter=pi0.Pi0Config().get_freeze_filter(),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=1,
     ),
 ]
 
