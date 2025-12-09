@@ -12,6 +12,7 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
+import openpi.training.augmentations as _augmentations
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -92,12 +93,17 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    image_transforms = None
+    if data_config.rgb_augmenter:
+        image_transforms = _augmentations.build_image_augmenter(data_config.rgb_augmenter)
+
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(model_config.action_horizon)]
             for key in data_config.action_sequence_keys
         },
+        image_transforms=image_transforms,
     )
 
     if data_config.prompt_from_task:

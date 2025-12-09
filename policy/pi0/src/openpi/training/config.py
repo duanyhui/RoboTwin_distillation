@@ -26,6 +26,7 @@ import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
+import openpi.training.augmentations as _augmentations
 import openpi.transforms as _transforms
 
 ModelType: TypeAlias = _model.ModelType
@@ -78,6 +79,8 @@ class DataConfig:
     data_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # Model specific transforms. Will be applied after the data is normalized.
     model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # 传递给数据集的 RGB 增广配置（torchvision v2 变换）。
+    rgb_augmenter: Any | None = None
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantile_norm: bool = False
 
@@ -306,9 +309,13 @@ class LeRobotKuavoDataConfig(DataConfigFactory):
     action_sequence_keys: Sequence[str] = ("action", )
     
     cameras: tuple[str, ...] = ("head_cam_h", "wrist_cam_l", "wrist_cam_r")
+    # Torchvision RGB 增广配置（见 openpi.training.augmentations）
+    rgb_augmenter: Any | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        base_config = self.create_base_config(assets_dirs)
+
         # Dynamically create repack_transforms based on the requested cameras.
         repack_transforms = _transforms.Group(inputs=[
             _transforms.RepackTransform({
@@ -334,13 +341,14 @@ class LeRobotKuavoDataConfig(DataConfigFactory):
 
         model_transforms = ModelTransformFactory()(model_config)
 
-        
+
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            base_config,
             repack_transforms=repack_transforms,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            rgb_augmenter=self.rgb_augmenter if self.rgb_augmenter is not None else base_config.rgb_augmenter,
         )
 
 
@@ -570,6 +578,7 @@ _CONFIGS = [
         ),
         data=LeRobotKuavoDataConfig(
             repo_id="kuavo_task3_0101-0150",  # Replace with your actual dataset ID
+            rgb_augmenter=_augmentations.default_act_rgb_augmenter(),
             base_config=DataConfig(
                 local_files_only=True,
                 prompt_from_task=True,
@@ -592,6 +601,7 @@ _CONFIGS = [
         ),
         data=LeRobotKuavoDataConfig(
             repo_id="kuavo_task3_0101-0150",
+            rgb_augmenter=_augmentations.default_act_rgb_augmenter(),
             base_config=DataConfig(
                 local_files_only=True,
                 prompt_from_task=True,
@@ -615,6 +625,7 @@ _CONFIGS = [
         ),
         data=LeRobotKuavoDataConfig(
             repo_id="kuavo_task2_0001-0200-0401-0600",  # 替换为您的实际数据集 ID
+            rgb_augmenter=_augmentations.default_act_rgb_augmenter(),
             base_config=DataConfig(
                 local_files_only=True,
                 prompt_from_task=True,
