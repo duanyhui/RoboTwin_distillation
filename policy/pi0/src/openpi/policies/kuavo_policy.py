@@ -34,7 +34,7 @@ class KuavoInputs(transforms.DataTransformFn):
     action_dim: int
 
     # The expected cameras names.
-    EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = (
+    cameras: tuple[str, ...] = (
         "head_cam_h",
         "wrist_cam_l",
         "wrist_cam_r",
@@ -42,7 +42,7 @@ class KuavoInputs(transforms.DataTransformFn):
 
     def __call__(self, data: dict) -> dict:
         # Decode images (convert to HWC and uint8 if needed)
-        data = _decode_kuavo(data)
+        data = _decode_kuavo(data, self.cameras)
 
         # Get the state. We are padding from 20 to the model action dim (32).
         state = transforms.pad_to_dim(data["state"], self.action_dim)
@@ -58,7 +58,7 @@ class KuavoInputs(transforms.DataTransformFn):
         if base_image is None:
              # Fallback or error handling if head_cam_h is missing
              # For consistency with Aloha, we might want to raise an error or handle it gracefully
-             if "head_cam_h" in self.EXPECTED_CAMERAS:
+             if "head_cam_h" in self.cameras:
                  raise ValueError(f"Expected images to contain head_cam_h, got {tuple(in_images)}")
 
         images = {
@@ -109,7 +109,7 @@ class KuavoOutputs(transforms.DataTransformFn):
         return {"actions": actions}
 
 
-def _decode_kuavo(data: dict) -> dict:
+def _decode_kuavo(data: dict, expected_cameras: tuple[str, ...]) -> dict:
     state = np.asarray(data["state"])
 
     def convert_image(img):
@@ -124,7 +124,7 @@ def _decode_kuavo(data: dict) -> dict:
     images_dict = {
         name: convert_image(img)
         for name, img in images.items()
-        if name in KuavoInputs.EXPECTED_CAMERAS
+        if name in expected_cameras
     }
 
     data["images"] = images_dict

@@ -304,12 +304,29 @@ class LeRobotKuavoDataConfig(DataConfigFactory):
     ]))
     
     action_sequence_keys: Sequence[str] = ("action", )
+    
+    cameras: tuple[str, ...] = ("head_cam_h", "wrist_cam_l", "wrist_cam_r")
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Dynamically create repack_transforms based on the requested cameras.
+        repack_transforms = _transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                "images": {
+                    cam: f"observation.images.{cam}" for cam in self.cameras
+                },
+                "state": "observation.state",
+                "actions": "action",
+                "prompt": "prompt",
+            })
+        ])
+
         data_transforms = _transforms.Group(
             inputs=[
-                kuavo_policy.KuavoInputs(action_dim=model_config.action_dim),
+                kuavo_policy.KuavoInputs(
+                    action_dim=model_config.action_dim,
+                    cameras=self.cameras,
+                ),
                 _transforms.ResizeImages(224, 224),
             ],
             outputs=[kuavo_policy.KuavoOutputs()],
@@ -320,7 +337,7 @@ class LeRobotKuavoDataConfig(DataConfigFactory):
         
         return dataclasses.replace(
             self.create_base_config(assets_dirs),
-            repack_transforms=self.repack_transforms,
+            repack_transforms=repack_transforms,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
@@ -584,6 +601,36 @@ _CONFIGS = [
         batch_size=16,
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30000,
+        fsdp_devices=1,
+    ),
+    # pi0_kuavo_lora_single_cam
+    # Kuavo 机器人的单摄像头训练配置 (LoRA 微调)
+    # 此配置仅使用头部摄像头 (head_cam_h) 进行训练，适用于只有单视角的场景或为了减少计算资源消耗。
+    TrainConfig(
+        name="pi0_kuavo_lora_single_cam",
+        model=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora", 
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32  # 保持与 pi0_base 检查点形状一致
+        ),
+        data=LeRobotKuavoDataConfig(
+            repo_id="kuavo_task2_0001-0200-0401-0600",  # 替换为您的实际数据集 ID
+            base_config=DataConfig(
+                local_files_only=True,
+                prompt_from_task=True,
+            ),
+            # 关键修改：指定只使用头部摄像头进行训练
+            # 如果您的数据集包含其他摄像头数据，它们将被忽略。
+            # 如果您的数据集只包含此摄像头，这将避免因缺少其他摄像头而报错。
+            cameras=("head_cam_h",),
+        ),
+        freeze_filter=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=50000,
         fsdp_devices=1,
     ),
 ]
