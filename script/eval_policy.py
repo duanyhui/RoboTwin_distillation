@@ -205,6 +205,9 @@ def eval_policy(task_name,
     succ_seed = 0
     suc_test_seed_list = []
 
+    # === 新增：记录每次成功时的步数 ===
+    success_steps = []
+
     policy_name = args["policy_name"]
     eval_func = eval_function_decorator(policy_name, "eval")
     reset_func = eval_function_decorator(policy_name, "reset_model")
@@ -225,18 +228,11 @@ def eval_policy(task_name,
                 episode_info = TASK_ENV.play_once()
                 TASK_ENV.close_env()
             except UnStableError as e:
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
                 TASK_ENV.close_env()
                 now_seed += 1
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
-                # stack_trace = traceback.format_exc()
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
                 TASK_ENV.close_env()
                 now_seed += 1
                 args["render_freq"] = render_freq
@@ -290,19 +286,25 @@ def eval_policy(task_name,
 
         succ = False
         reset_func(model)
+
+        # === 这一轮 episode 的控制循环 ===
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
             eval_func(TASK_ENV, model, observation)
             if TASK_ENV.eval_success:
                 succ = True
                 break
-        # task_total_reward += TASK_ENV.episode_score
+
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
 
         if succ:
             TASK_ENV.suc += 1
-            print("\033[92mSuccess!\033[0m")
+
+            # === 新增：记录当前成功所用步数 ===
+            steps_this_success = TASK_ENV.take_action_cnt
+            success_steps.append(steps_this_success)
+            print(f"\033[92mSuccess!\033[0m  Steps used: {steps_this_success}")
         else:
             print("\033[91mFail!\033[0m")
 
@@ -315,11 +317,25 @@ def eval_policy(task_name,
         TASK_ENV.test_num += 1
 
         print(
-            f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | \033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
-            f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"
+            f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | "
+            f"\033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
+            f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m "
+            f"=> \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, "
+            f"current seed: \033[90m{now_seed}\033[0m\n"
         )
-        # TASK_ENV._take_picture()
+
         now_seed += 1
+
+    # === 新增：eval 全部结束后，统计平均成功步数 ===
+    if len(success_steps) > 0:
+        avg_steps = sum(success_steps) / len(success_steps)
+        print(
+            f"\033[96mFinished eval.\033[0m "
+            f"Total successes: {len(success_steps)}, "
+            f"Average steps per success: \033[93m{avg_steps:.2f}\033[0m"
+        )
+    else:
+        print("\033[91mFinished eval. No successful episodes, average steps undefined.\033[0m")
 
     return now_seed, TASK_ENV.suc
 
