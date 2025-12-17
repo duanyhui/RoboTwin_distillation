@@ -30,3 +30,7 @@ envs/curobo/*
 /*.txt
 .idea
 policy/RDT/rdt_labels
+policy/RDT/action_visualizations/*
+policy/pi0/training_data/*
+replay_videos/*
+policy/DP_mn/*

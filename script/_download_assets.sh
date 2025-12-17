@@ -6,8 +6,8 @@ python _download.py
 #rm -rf background_texture.zip
 
 # embodiments
-unzip embodiments.zip
-rm -rf embodiments.zip
+ unzip embodiments.zip
+# rm -rf embodiments.zip
 
 # objects
 #unzip objects.zip
