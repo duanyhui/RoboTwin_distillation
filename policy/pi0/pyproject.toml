@@ -1,10 +1,12 @@
+
 [project]
 name = "openpi"
 version = "0.1.0"
 description = "Physical Intelligence open source repo"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 license = { file = "LICENSE" }
 dependencies = [
+    "uv",
     "pip==24.2",
     "augmax>=0.3.4",
     "dm-tree>=0.1.8",
@@ -15,7 +17,7 @@ dependencies = [
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
     "imageio>=2.36.1",
-    "jax[cuda12]==0.5.0",
+    "jax[cuda12]>=0.5.2",
     "jaxtyping==0.2.36",
     "lerobot",
     "ml_collections==1.0.0",
@@ -27,7 +29,7 @@ dependencies = [
     "pillow>=11.0.0",
     "s3fs>=2024.9.0",
     "sentencepiece>=0.2.0",
-    "torch>=2.5.1",
+    "torch>=2.7.1",
     "tqdm-loggable>=0.2",
     "typing-extensions>=4.12.2",
     "tyro>=0.9.5",
@@ -66,12 +68,41 @@ dev = [
     "matplotlib>=3.10.0",
     "pynvml>=12.0.0",
 ]
+# ---- uv index 配置：PyPI 默认，cu128 仅给 torch 系列 ----
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv]
+# 可选：你只在 Linux 上用，避免 darwin split 解析失败
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_full_version == '3.11.*'"
+]
+override-dependencies = [
+  "nvidia-cuda-nvcc-cu12>=12.8",
+  "nvidia-cuda-runtime-cu12>=12.8",
+  "nvidia-cuda-cupti-cu12>=12.8"
+]
 
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
-lerobot = { git = "https://github.com/huggingface/lerobot", rev = "a445d9c9da6bea99a8972daa4fe1fdd053d711d2" }
 
+# 你的 lerobot fork 继续保留
+lerobot = { git = "https://github.com/duanyhui/lerobot.git", rev = "my-torch-2-7-branch" }
+
+# 关键：torch 系列强制走 cu128 源
+torch = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+torchaudio = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+# ✅ 新增：强制 numpy 走 pypi
+numpy = { index = "pypi" }
 [tool.uv.workspace]
 members = ["packages/*"]
 
