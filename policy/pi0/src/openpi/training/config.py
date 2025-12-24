@@ -399,7 +399,7 @@ class TrainConfig:
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = 3000
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -450,7 +450,9 @@ _CONFIGS = [
         name="pi0_base_aloha_robotwin_lora",
         model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
-            repo_id="place_container_plate-demo_clean-50",  # your datasets repo_id
+            # repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
+            # repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
+            repo_id="stack_bowls_three-demo_clean-50",  # your datasets repo_id
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({

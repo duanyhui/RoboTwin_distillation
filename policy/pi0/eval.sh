@@ -16,7 +16,7 @@ echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 source .venv/bin/activate
 cd ../.. # move to root
 
-PYTHONWARNINGS=ignore::UserWarning \
+XLA_FLAGS="--xla_gpu_autotune_level=0" PYTHONWARNINGS=ignore::UserWarning \
 python script/eval_policy.py --config policy/$policy_name/deploy_policy.yml \
     --overrides \
     --task_name ${task_name} \
