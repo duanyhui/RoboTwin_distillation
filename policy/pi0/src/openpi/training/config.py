@@ -7,7 +7,7 @@ import difflib
 import logging
 import pathlib
 import numpy as np
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -418,6 +418,37 @@ class TrainConfig:
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
+    # 可选：Sampling Plan 路径（目录或 plan_meta.json/plan_arrays.npz）。
+    # 传入后训练将由 plan 驱动采样（仍是单阶段训练流程，只改变“样本出现的分布”）。
+    sampling_plan_path: str | None = None
+    # 可选：覆盖 sampler_seed；若不设置则使用 plan_meta 里的 sampler_seed（用于 WeightedRandomSampler 的随机性）。
+    sampler_seed_override: int | None = None
+    # 可选：覆盖 replacement（是否有放回采样）；若不设置则使用 plan_meta 里的 replacement。
+    sampler_replacement_override: bool | None = None
+
+    # 冻结策略（freeze：冻结参数不更新）。
+    # - default：保持 config 里已有的 freeze_filter（baseline 不变）
+    # - strong：在 baseline 基础上额外冻结视觉塔（vision tower：图像编码器），少样本更稳
+    freeze_mode: Literal["default", "strong"] = "default"
+
+    # 预算感知学习率配方（budget-aware schedule：针对短训把 warmup/decay 按总步数重标定）。
+    # 启用后可避免把 30000 steps 的 schedule 直接搬到 6000/3000 导致“不收敛/震荡”。
+    budget_aware_schedule: bool = False
+    budget_warmup_ratio: float = 0.03
+    budget_min_warmup_steps: int = 50
+
+    # Plan-aware LR scaling（plan 感知学习率缩放）：
+    # 少样本 + 采样计划常常导致“有效重复次数”非常高（同一批样本被反复看到），
+    # 如果仍用 baseline 的 peak_lr，容易出现遗忘/过拟合（catastrophic forgetting：把原本能力训没了）。
+    # 该选项会在启用 sampling_plan_path 时，根据 plan 的 ESS 估算有效重复次数并缩放学习率（默认关闭，避免影响 baseline）。
+    plan_aware_lr_scale: bool = False
+    # 目标“有效重复次数”（effective repeat）：越小越保守。可从 30~100 之间做敏感性。
+    plan_target_effective_repeat: float = 50.0
+    # 缩放指数（0.5 表示开平方缩放）：scale = (target / repeat) ** power
+    plan_lr_scale_power: float = 0.5
+    # 最小缩放倍率（防止过小导致完全学不动）
+    plan_lr_min_scale: float = 0.05
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
@@ -450,9 +481,9 @@ _CONFIGS = [
         name="pi0_base_aloha_robotwin_lora",
         model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
-            # repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
-            # repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
-            repo_id="stack_bowls_three-demo_clean-50",  # your datasets repo_id
+            repo_id="beat_block_hammer-demo_clean-50",  # your datasets repo_id
+            # repo_id="lift_pot-demo_clean-50",  # your datasets repo_id
+            # repo_id="stack_bowls_three-demo_clean-50",  # your datasets repo_id
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({

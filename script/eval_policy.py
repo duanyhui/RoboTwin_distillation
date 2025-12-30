@@ -1,6 +1,8 @@
 import sys
 import os
 import subprocess
+import json
+import time
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -163,14 +165,16 @@ def main(usr_args):
     topk = 1
 
     model = get_model(usr_args)
-    st_seed, suc_num = eval_policy(task_name,
-                                   TASK_ENV,
-                                   args,
-                                   model,
-                                   st_seed,
-                                   test_num=test_num,
-                                   video_size=video_size,
-                                   instruction_type=instruction_type)
+    st_seed, suc_num, metrics = eval_policy(
+        task_name,
+        TASK_ENV,
+        args,
+        model,
+        st_seed,
+        test_num=test_num,
+        video_size=video_size,
+        instruction_type=instruction_type,
+    )
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -181,6 +185,17 @@ def main(usr_args):
         file.write(f"Instruction Type: {instruction_type}\n\n")
         # file.write(str(task_reward) + '\n')
         file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
+
+    # 额外输出结构化指标，便于论文统计/画图：
+    # - eval_time_sec：评测耗时
+    # - avg_steps_success：成功 episode 平均步数（越低通常表示更高效）
+    # - failure_counts：失败类型（timeout/exception）
+    metrics_path = os.path.join(save_dir, "_metrics.json")
+    try:
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception:
+        traceback.print_exc()
 
     print(f"Data has been saved to {file_path}")
     # return task_reward
@@ -205,8 +220,10 @@ def eval_policy(task_name,
     succ_seed = 0
     suc_test_seed_list = []
 
-    # === 新增：记录每次成功时的步数 ===
+    # 记录“成功时用步数”与失败类型：避免只看成功率导致误判（例如变慢、频繁超时/异常）
     success_steps = []
+    failure_counts = {"timeout": 0, "exception": 0, "other": 0}
+    eval_start_time = time.time()
 
     policy_name = args["policy_name"]
     eval_func = eval_function_decorator(policy_name, "eval")
@@ -249,64 +266,79 @@ def eval_policy(task_name,
 
         args["render_freq"] = render_freq
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-        episode_info_list = [episode_info["info"]]
-        results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
-        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
-
-        if TASK_ENV.eval_video_path is not None:
-            ffmpeg = subprocess.Popen(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    video_size,
-                    "-framerate",
-                    "10",
-                    "-i",
-                    "-",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "23",
-                    f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
-                ],
-                stdin=subprocess.PIPE,
-            )
-            TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
-
         succ = False
-        reset_func(model)
+        failure_type = None
+        ffmpeg = None
+        try:
+            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+            episode_info_list = [episode_info["info"]]
+            results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
+            instruction = np.random.choice(results[0][instruction_type])
+            TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
-        # === 这一轮 episode 的控制循环 ===
-        while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
-            observation = TASK_ENV.get_obs()
-            eval_func(TASK_ENV, model, observation)
-            if TASK_ENV.eval_success:
-                succ = True
-                break
+            if TASK_ENV.eval_video_path is not None:
+                ffmpeg = subprocess.Popen(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "rawvideo",
+                        "-pixel_format",
+                        "rgb24",
+                        "-video_size",
+                        video_size,
+                        "-framerate",
+                        "10",
+                        "-i",
+                        "-",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-vcodec",
+                        "libx264",
+                        "-crf",
+                        "23",
+                        f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
+                    ],
+                    stdin=subprocess.PIPE,
+                )
+                TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
-        if TASK_ENV.eval_video_path is not None:
-            TASK_ENV._del_eval_video_ffmpeg()
+            reset_func(model)
 
-        if succ:
-            TASK_ENV.suc += 1
+            # === 这一轮 episode 的控制循环 ===
+            while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+                observation = TASK_ENV.get_obs()
+                eval_func(TASK_ENV, model, observation)
+                if TASK_ENV.eval_success:
+                    succ = True
+                    break
 
-            # === 新增：记录当前成功所用步数 ===
-            steps_this_success = TASK_ENV.take_action_cnt
-            success_steps.append(steps_this_success)
-            print(f"\033[92mSuccess!\033[0m  Steps used: {steps_this_success}")
-        else:
-            print("\033[91mFail!\033[0m")
+            if succ:
+                TASK_ENV.suc += 1
+
+                # === 新增：记录当前成功所用步数 ===
+                steps_this_success = TASK_ENV.take_action_cnt
+                success_steps.append(steps_this_success)
+                print(f"\033[92mSuccess!\033[0m  Steps used: {steps_this_success}")
+            else:
+                # timeout：在 step_lim 内没有达到成功条件（常见于策略变慢/卡住/鲁棒性不足）
+                failure_type = "timeout"
+                failure_counts["timeout"] += 1
+                print("\033[91mFail!\033[0m (timeout)")
+        except Exception:
+            # exception：评测过程中抛异常（可能是环境不稳定/模型推理异常/IO 问题）
+            failure_type = "exception"
+            failure_counts["exception"] += 1
+            traceback.print_exc()
+            print("\033[91mFail!\033[0m (exception)")
+        finally:
+            if TASK_ENV.eval_video_path is not None:
+                try:
+                    TASK_ENV._del_eval_video_ffmpeg()
+                except Exception:
+                    pass
 
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
@@ -327,6 +359,7 @@ def eval_policy(task_name,
         now_seed += 1
 
     # === 新增：eval 全部结束后，统计平均成功步数 ===
+    eval_time_sec = float(time.time() - eval_start_time)
     if len(success_steps) > 0:
         avg_steps = sum(success_steps) / len(success_steps)
         print(
@@ -335,9 +368,24 @@ def eval_policy(task_name,
             f"Average steps per success: \033[93m{avg_steps:.2f}\033[0m"
         )
     else:
+        avg_steps = None
         print("\033[91mFinished eval. No successful episodes, average steps undefined.\033[0m")
 
-    return now_seed, TASK_ENV.suc
+    metrics = {
+        "task_name": task_name,
+        "task_config": args.get("task_config"),
+        "ckpt_setting": args.get("ckpt_setting"),
+        "policy_name": args.get("policy_name"),
+        "instruction_type": instruction_type,
+        "successes": int(TASK_ENV.suc),
+        "episodes": int(TASK_ENV.test_num),
+        "success_rate": float(TASK_ENV.suc / max(1, TASK_ENV.test_num)),
+        "avg_steps_success": avg_steps,
+        "eval_time_sec": eval_time_sec,
+        "failure_counts": failure_counts,
+    }
+
+    return now_seed, TASK_ENV.suc, metrics
 
 
 def parse_args_and_config():

@@ -1,6 +1,7 @@
 from collections.abc import Iterator, Sequence
 import multiprocessing
 import os
+import random
 import typing
 from typing import Protocol, SupportsIndex, TypeVar
 
@@ -112,6 +113,16 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
     return dataset
 
 
+def _unwrap_lerobot_dataset(dataset: Dataset) -> lerobot_dataset.LeRobotDataset | None:
+    """把 TransformedDataset 一层层拆开，拿到最底层的 LeRobotDataset（用于 fingerprint 校验等）。"""
+    ds = dataset
+    while hasattr(ds, "_dataset"):
+        ds = getattr(ds, "_dataset")
+    if isinstance(ds, lerobot_dataset.LeRobotDataset):
+        return ds
+    return None
+
+
 def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
@@ -160,14 +171,66 @@ def create_data_loader(
     dataset = create_dataset(data_config, config.model)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
+    sampler = None
+    if config.sampling_plan_path:
+        # Plan-STaR：启用采样计划文件后
+        # 1) 校验 plan 与当前训练数据/模型 horizon 一致
+        # 2) 用 plan.anchor_indices 对数据集做 Subset
+        # 3) 用 plan.weights 构造 WeightedRandomSampler（可选 replacement）
+        from openpi.training.sampling_plan import SamplingPlan
+
+        plan = SamplingPlan.load(config.sampling_plan_path, verify_sha256=True)
+        meta = plan.meta
+        if meta.get("repo_id") != data_config.repo_id:
+            raise ValueError(
+                f"Sampling plan repo_id mismatch: plan={meta.get('repo_id')} config={data_config.repo_id}")
+        if int(meta.get("dataset_len", -1)) != len(dataset):
+            raise ValueError(
+                f"Sampling plan dataset_len mismatch: plan={meta.get('dataset_len')} dataset={len(dataset)}")
+        if int(meta.get("action_horizon_H", -1)) != int(config.model.action_horizon):
+            raise ValueError(
+                f"Sampling plan action_horizon_H mismatch: plan={meta.get('action_horizon_H')} model={config.model.action_horizon}"
+            )
+
+        lr_ds = _unwrap_lerobot_dataset(dataset)
+        if lr_ds is not None:
+            fp = getattr(getattr(lr_ds, "hf_dataset", None), "_fingerprint", None)
+            plan_fp = meta.get("dataset_fingerprint")
+            if fp is not None and plan_fp and str(fp) != str(plan_fp):
+                raise ValueError(f"Sampling plan dataset_fingerprint mismatch: plan={plan_fp} dataset={fp}")
+
+        if np.any(plan.anchor_indices < 0) or np.any(plan.anchor_indices >= len(dataset)):
+            raise ValueError("Sampling plan anchor_indices out of range for dataset.")
+
+        # 训练数据只保留 anchors（锚点起点）；后续 DataLoader 看到的 index 是 [0..len(anchors)-1]
+        dataset = torch.utils.data.Subset(typing.cast(torch.utils.data.Dataset, dataset), plan.anchor_indices.tolist())
+        # replacement=True：有放回采样（少样本短训常用）
+        # replacement=False：无放回采样（更像按 epoch 覆盖一遍 anchors）
+        replacement = config.sampler_replacement_override if config.sampler_replacement_override is not None else bool(
+            meta.get("replacement", True))
+        # sampler_seed：控制 WeightedRandomSampler 的随机性（独立于 training seed，可用于复现实验）
+        sampler_seed = config.sampler_seed_override if config.sampler_seed_override is not None else int(
+            meta.get("sampler_seed", config.seed))
+        sampler_generator = torch.Generator()
+        sampler_generator.manual_seed(sampler_seed)
+        weights = torch.as_tensor(plan.weights, dtype=torch.double)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(weights),
+            replacement=replacement,
+            generator=sampler_generator,
+        )
+
     data_loader = TorchDataLoader(
         dataset,
         local_batch_size=config.batch_size // jax.process_count(),
         sharding=sharding,
-        shuffle=shuffle,
+        # 若启用 sampler，则必须关闭 shuffle（PyTorch 要求 sampler 与 shuffle 互斥）
+        shuffle=shuffle if sampler is None else False,
         num_batches=num_batches,
         num_workers=num_workers,
         seed=config.seed,
+        sampler=sampler,
     )
 
     class DataLoaderImpl(DataLoader):
@@ -198,6 +261,7 @@ class TorchDataLoader:
         num_batches: int | None = None,
         num_workers: int = 0,
         seed: int = 0,
+        sampler: torch.utils.data.Sampler | None = None,
     ):
         """Create a PyTorch data loader.
 
@@ -240,6 +304,7 @@ class TorchDataLoader:
             typing.cast(torch.utils.data.Dataset, dataset),
             batch_size=local_batch_size,
             shuffle=shuffle,
+            sampler=sampler,
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
@@ -281,3 +346,12 @@ def _worker_init_fn(worker_id: int) -> None:
     # means that this approach will not work for selecting the backend.
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is None:
+        return
+    # 关键：同步设置 random/numpy/torch 的 worker seed，提升多 worker 场景下的可复现性
+    seed = int(worker_info.seed) % (2**32)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
