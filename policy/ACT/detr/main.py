@@ -115,6 +115,11 @@ def get_args_parser():
     parser.add_argument("--temporal_agg", action="store_true")
     parser.add_argument("--state_dim", action="store", type=int, help="state dim", required=True)
     parser.add_argument("--save_freq", action="store", type=int, help="save ckpt frequency", required=False, default=6000)
+    # compute-fair / budget-aligned training args (not used by DETR; kept to avoid argparse errors)
+    parser.add_argument("--target_updates", action="store", type=int, required=False, default=None)
+    parser.add_argument("--eval_every_updates", action="store", type=int, required=False, default=0)
+    parser.add_argument("--save_every_updates", action="store", type=int, required=False, default=0)
+    parser.add_argument("--log_every_updates", action="store", type=int, required=False, default=0)
     # parser.add_argument('--num_queries',type=int, required=True)
     # parser.add_argument('--actionsByQuery',type=int, required=True)
 

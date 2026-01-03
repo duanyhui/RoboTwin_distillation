@@ -3,6 +3,7 @@ import os
 # Set rendering backend for MuJoCo
 os.environ["MUJOCO_GL"] = "egl"
 
+import math
 import torch
 import numpy as np
 import pickle
@@ -105,7 +106,12 @@ def main(args):
         "temporal_agg": args["temporal_agg"],
         "camera_names": camera_names,
         "real_robot": not is_sim,
-        "save_freq": args['save_freq']
+        "save_freq": args['save_freq'],
+        # compute-fair / budget-aligned training (optional)
+        "target_updates": args.get("target_updates"),
+        "eval_every_updates": args.get("eval_every_updates"),
+        "save_every_updates": args.get("save_every_updates"),
+        "log_every_updates": args.get("log_every_updates"),
     }
 
     if is_eval:
@@ -360,6 +366,10 @@ def train_bc(train_dataloader, val_dataloader, config):
     seed = config["seed"]
     policy_class = config["policy_class"]
     policy_config = config["policy_config"]
+    target_updates = config.get("target_updates")
+    eval_every_updates = config.get("eval_every_updates")
+    save_every_updates = config.get("save_every_updates")
+    log_every_updates = config.get("log_every_updates")
 
     set_seed(seed)
 
@@ -367,65 +377,174 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
+    def run_validation(step_tag: str):
+        with torch.inference_mode():
+            policy.eval()
+            epoch_dicts = []
+            for _, data in enumerate(val_dataloader):
+                forward_dict = forward_pass(data, policy)
+                epoch_dicts.append(forward_dict)
+            epoch_summary = compute_dict_mean(epoch_dicts)
+        print(f"{step_tag} Val loss: {epoch_summary['loss']:.5f}")
+        return epoch_summary
+
     train_history = []
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
 
-    for epoch in tqdm(range(num_epochs)):
-        print(f"\nEpoch {epoch}")
-        # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy)
-                epoch_dicts.append(forward_dict)
-            epoch_summary = compute_dict_mean(epoch_dicts)
+    # ========= mode 1: epoch-based training (default, backward compatible) =========
+    if target_updates is None:
+        for epoch in tqdm(range(num_epochs)):
+            print(f"\nEpoch {epoch}")
+            # validation
+            epoch_summary = run_validation(step_tag=f"[epoch {epoch}]")
             validation_history.append(epoch_summary)
-
-            epoch_val_loss = epoch_summary["loss"]
+            epoch_val_loss = float(epoch_summary["loss"])
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f"Val loss:   {epoch_val_loss:.5f}")
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
 
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        for batch_idx, data in enumerate(train_dataloader):
+            # training
+            policy.train()
+            optimizer.zero_grad()
+            for batch_idx, data in enumerate(train_dataloader):
+                forward_dict = forward_pass(data, policy)
+                # backward
+                loss = forward_dict["loss"]
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                train_history.append(detach_dict(forward_dict))
+            epoch_summary = compute_dict_mean(train_history[(batch_idx + 1) * epoch:(batch_idx + 1) * (epoch + 1)])
+            epoch_train_loss = epoch_summary["loss"]
+            print(f"[epoch {epoch}] Train loss: {epoch_train_loss:.5f}")
+
+            if (epoch + 1) % config['save_freq'] == 0:
+                ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
+                torch.save(policy.state_dict(), ckpt_path)
+                plot_history(train_history, validation_history, epoch + 1, ckpt_dir, seed)
+
+        ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
+        torch.save(policy.state_dict(), ckpt_path)
+
+        best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+        ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{best_epoch}_seed_{seed}.ckpt")
+        torch.save(best_state_dict, ckpt_path)
+        print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}")
+
+        # save training curves
+        plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
+        return best_ckpt_info
+
+    # ========= mode 2: update-based training (compute-fair / budget-aligned) =========
+    target_updates = int(target_updates)
+    if target_updates <= 0:
+        raise ValueError(f"target_updates must be > 0, got {target_updates}")
+
+    steps_per_epoch = max(1, len(train_dataloader))
+    needed_epochs = math.ceil(target_updates / steps_per_epoch)
+    if num_epochs < needed_epochs:
+        print(
+            f"[budget] Override num_epochs {num_epochs} -> {needed_epochs} "
+            f"(target_updates={target_updates}, steps_per_epoch={steps_per_epoch})"
+        )
+        num_epochs = needed_epochs
+
+    # Defaults: keep overhead reasonable for small datasets.
+    if not eval_every_updates or int(eval_every_updates) <= 0:
+        eval_every_updates = max(100, steps_per_epoch * 20)
+    else:
+        eval_every_updates = int(eval_every_updates)
+
+    if not save_every_updates or int(save_every_updates) <= 0:
+        save_every_updates = max(1000, eval_every_updates)
+    else:
+        save_every_updates = int(save_every_updates)
+
+    if not log_every_updates or int(log_every_updates) <= 0:
+        log_every_updates = min(50, eval_every_updates)
+    else:
+        log_every_updates = int(log_every_updates)
+
+    print(
+        f"[budget] target_updates={target_updates}, steps_per_epoch={steps_per_epoch}, "
+        f"max_epochs={num_epochs}, eval_every_updates={eval_every_updates}, "
+        f"save_every_updates={save_every_updates}, log_every_updates={log_every_updates}"
+    )
+
+    update = 0
+    val_update_steps = []
+
+    # initial validation (update 0)
+    epoch_summary = run_validation(step_tag=f"[update {update}]")
+    validation_history.append(epoch_summary)
+    val_update_steps.append(update)
+    epoch_val_loss = float(epoch_summary["loss"])
+    if epoch_val_loss < min_val_loss:
+        min_val_loss = epoch_val_loss
+        best_ckpt_info = (update, min_val_loss, deepcopy(policy.state_dict()))
+
+    policy.train()
+    optimizer.zero_grad()
+    window_losses = []
+
+    for epoch in tqdm(range(num_epochs)):
+        for _, data in enumerate(train_dataloader):
             forward_dict = forward_pass(data, policy)
-            # backward
             loss = forward_dict["loss"]
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx + 1) * epoch:(batch_idx + 1) * (epoch + 1)])
-        epoch_train_loss = epoch_summary["loss"]
-        print(f"Train loss: {epoch_train_loss:.5f}")
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
 
-        if (epoch + 1) % config['save_freq'] == 0:
-            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
-            torch.save(policy.state_dict(), ckpt_path)
-            plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+            update += 1
+            train_history.append(detach_dict(forward_dict))
+            window_losses.append(float(loss.detach().cpu()))
+
+            if log_every_updates and (update % log_every_updates == 0) and window_losses:
+                avg_loss = sum(window_losses) / len(window_losses)
+                print(f"[update {update}] Train loss(avg over {len(window_losses)}): {avg_loss:.5f}")
+                window_losses = []
+
+            if save_every_updates and (update % save_every_updates == 0):
+                ckpt_path = os.path.join(ckpt_dir, f"policy_update_{update}_seed_{seed}.ckpt")
+                torch.save(policy.state_dict(), ckpt_path)
+
+            if eval_every_updates and (update % eval_every_updates == 0):
+                epoch_summary = run_validation(step_tag=f"[update {update}]")
+                validation_history.append(epoch_summary)
+                val_update_steps.append(update)
+                epoch_val_loss = float(epoch_summary["loss"])
+                if epoch_val_loss < min_val_loss:
+                    min_val_loss = epoch_val_loss
+                    best_ckpt_info = (update, min_val_loss, deepcopy(policy.state_dict()))
+                policy.train()
+
+            if update >= target_updates:
+                break
+        if update >= target_updates:
+            break
+
+    # final validation (optional) at the end of training budget
+    if val_update_steps and (val_update_steps[-1] != update):
+        epoch_summary = run_validation(step_tag=f"[update {update}]")
+        validation_history.append(epoch_summary)
+        val_update_steps.append(update)
+        epoch_val_loss = float(epoch_summary["loss"])
+        if epoch_val_loss < min_val_loss:
+            min_val_loss = epoch_val_loss
+            best_ckpt_info = (update, min_val_loss, deepcopy(policy.state_dict()))
 
     ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
     torch.save(policy.state_dict(), ckpt_path)
 
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{best_epoch}_seed_{seed}.ckpt")
+    best_update, min_val_loss, best_state_dict = best_ckpt_info
+    ckpt_path = os.path.join(ckpt_dir, f"policy_update_{best_update}_seed_{seed}.ckpt")
     torch.save(best_state_dict, ckpt_path)
-    print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}")
+    print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at update {best_update}")
 
-    # save training curves
-    plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
+    # save training curves (x-axis = updates)
+    plot_history_updates(train_history, validation_history, val_update_steps, ckpt_dir, seed)
 
     return best_ckpt_info
 
@@ -455,6 +574,31 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
     print(f"Saved plots to {ckpt_dir}")
 
 
+def plot_history_updates(train_history, validation_history, val_update_steps, ckpt_dir, seed):
+    # save training curves with x-axis in "optimizer updates"
+    if not train_history:
+        return
+    train_steps = np.arange(1, len(train_history) + 1)
+    if val_update_steps:
+        val_steps = np.array(val_update_steps, dtype=np.int64)
+    else:
+        # fallback: equally-spaced, not recommended but keeps plotting robust
+        val_steps = np.linspace(0, max(1, len(train_history) - 1), len(validation_history))
+
+    for key in train_history[0]:
+        plot_path = os.path.join(ckpt_dir, f"train_val_updates_{key}_seed_{seed}.png")
+        plt.figure()
+        train_values = [summary[key].item() for summary in train_history]
+        val_values = [summary[key].item() for summary in validation_history]
+        plt.plot(train_steps, train_values, label="train")
+        plt.plot(val_steps, val_values, label="validation")
+        plt.tight_layout()
+        plt.legend()
+        plt.title(key)
+        plt.savefig(plot_path)
+    print(f"Saved update-based plots to {ckpt_dir}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval", action="store_true")
@@ -472,6 +616,39 @@ if __name__ == "__main__":
     parser.add_argument("--seed", action="store", type=int, help="seed", required=True)
     parser.add_argument("--num_epochs", action="store", type=int, help="num_epochs", required=True)
     parser.add_argument("--lr", action="store", type=float, help="lr", required=True)
+    # compute-fair / budget-aligned training (optional)
+    parser.add_argument(
+        "--target_updates",
+        action="store",
+        type=int,
+        required=False,
+        default=None,
+        help="Optional: stop training after this many optimizer updates (compute-fair).",
+    )
+    parser.add_argument(
+        "--eval_every_updates",
+        action="store",
+        type=int,
+        required=False,
+        default=0,
+        help="Optional: run validation every N updates when using --target_updates (0=auto).",
+    )
+    parser.add_argument(
+        "--save_every_updates",
+        action="store",
+        type=int,
+        required=False,
+        default=0,
+        help="Optional: save checkpoint every N updates when using --target_updates (0=auto).",
+    )
+    parser.add_argument(
+        "--log_every_updates",
+        action="store",
+        type=int,
+        required=False,
+        default=0,
+        help="Optional: print train loss every N updates when using --target_updates (0=auto).",
+    )
 
     # for ACT
     parser.add_argument("--kl_weight", action="store", type=int, help="KL Weight", required=False)
